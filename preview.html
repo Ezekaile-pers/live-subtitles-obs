@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Subtitles — styles</title>
+  <!-- Все стили рядом на условном кадре игры: выбрать вид, ник и размер до того, как ставить в OBS.
+       Открыть в обычном браузере двойным кликом. Картинки для README (tests/render_docs.mjs): ?shot=<стиль> — один кадр
+       1920×1080, ?gallery=1 — все стили сеткой без панели; к обоим можно name, size, pack. -->
+  <link rel="stylesheet" href="overlay/styles.css">
+  <style>
+    html, body { height: auto; overflow: auto; }
+    body { background: #0c0e11; color: #d8dde3; font: 14px/1.45 "Segoe UI", Arial, sans-serif; }
+    .bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 12px 16px; background: #14181d; border-bottom: 1px solid #262c33; }
+    .bar label { display: flex; gap: 8px; align-items: center; }
+    .bar input[type="text"] { width: 180px; padding: 4px 6px; border: 1px solid #39414b; border-radius: 4px; background: #0c0e11; color: inherit; }
+    .bar .phrase input { width: 340px; }
+    .bar select { padding: 3px 4px; background: #0c0e11; color: inherit; border: 1px solid #39414b; border-radius: 4px; }
+    h1 { margin: 0 16px 0 0; font-size: 16px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px; padding: 18px 16px 32px; }
+    .card h2 { margin: 0 0 6px; font: 600 12px/1.4 "Segoe UI", sans-serif; letter-spacing: 0.14em; text-transform: uppercase; color: #8fb8c8; }
+    .card code { color: #c9d1d9; }
+    .screen { position: relative; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 6px; }
+    .frame { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+    .scene {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(1px 1px at 12% 22%, #fff8 50%, transparent 51%), radial-gradient(1px 1px at 64% 14%, #fff9 50%, transparent 51%),
+        radial-gradient(1.5px 1.5px at 82% 61%, #fffa 50%, transparent 51%), radial-gradient(1px 1px at 33% 72%, #fff7 50%, transparent 51%),
+        radial-gradient(1px 1px at 47% 41%, #fff8 50%, transparent 51%), radial-gradient(1px 1px at 91% 33%, #fff6 50%, transparent 51%),
+        radial-gradient(60% 70% at 70% 40%, #2a3f5a 0%, transparent 70%), radial-gradient(50% 60% at 20% 80%, #3d2240 0%, transparent 70%),
+        linear-gradient(180deg, #05070b, #0b1018);
+    }
+    .scene::after { content: ""; position: absolute; left: 4%; right: 4%; bottom: 3%; height: 7%; border: 1px solid #ffffff1c; background: #0006; border-radius: 6px; }
+    body.shot { background: transparent; overflow: hidden; }
+    body.shot .bar { display: none; }
+    body.shot .grid { display: block; padding: 0; }
+    body.shot .card h2 { display: none; }
+    body.shot .screen { width: 1920px; height: 1080px; border-radius: 0; }
+    body.shot .line, body.gallery .line { animation: none !important; } /* снимок не должен поймать строку на середине появления */
+    body.gallery .bar { display: none; }
+    body.gallery .grid { grid-template-columns: repeat(3, 1fr); }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <h1>Live Subtitles</h1>
+    <label>Name <input id="name" type="text" value="Ezekaile"></label>
+    <label>Size <input id="size" type="range" min="20" max="80" value="40"> <span id="size-value">40</span></label>
+    <label>Pack <select id="pack"><option value="">none (basic)</option><option value="eve">EVE Online</option><option value="wow">World of Warcraft</option></select></label>
+    <label class="phrase">Phrase <input id="phrase" type="text" placeholder="your own line (Whisper's raw English)"></label>
+  </div>
+  <div id="grid" class="grid"></div>
+
+  <script src="overlay/clean.js"></script>
+  <script src="packs/profanity.js"></script>
+  <script src="packs/eve.js"></script>
+  <script src="packs/wow.js"></script>
+  <script src="overlay/overlay.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const LS = window.LiveSubtitles;
+      const STYLES = [
+        ['classic', 'Classic — movie subtitles'],
+        ['box', 'Box — minimal plate'],
+        ['eve-photon', 'EVE Photon — EVE Online window'],
+        ['eve-local', 'EVE Local — Local chat line'],
+        ['wow', 'WoW — /say chat line'],
+      ];
+      const SAMPLE = {
+        eve: ['tackle him, I have point', 'Warp to the gate, jump on my mark'],
+        wow: ['Okay guys, we are going to the western edge', 'Hogger again. Every single time'],
+        '': ['Hello chat, the subtitles are working', 'This is how a second sentence looks'],
+      };
+      const params = new URLSearchParams(location.search);
+      const shot = params.get('shot');
+      // Картинки для README без pack: у каждого стиля свои примеры — базовые стили с обычной речью, игровые со сленгом.
+      const STYLE_PACK = { classic: '', box: '', 'eve-photon': 'eve', 'eve-local': 'eve', wow: 'wow' };
+      const perStyle = (shot || params.has('gallery')) && !params.has('pack');
+      const $ = (id) => document.getElementById(id);
+      const grid = $('grid');
+      if (params.has('gallery')) document.body.classList.add('gallery');
+      if (shot || params.has('gallery')) {
+        if (shot) document.body.classList.add('shot');
+        if (params.get('name')) $('name').value = params.get('name');
+        if (params.get('size')) $('size').value = params.get('size');
+        if (params.has('pack')) $('pack').value = params.get('pack');
+      }
+
+      const cards = (shot ? STYLES.filter(([id]) => id === shot) : STYLES).map(([id, title]) => {
+        const card = grid.appendChild(document.createElement('div'));
+        card.className = 'card';
+        card.innerHTML = `<h2>${title} · <code>style=${id}</code></h2><div class="screen"><div class="frame"><div class="scene"></div><div class="subs"></div></div></div>`;
+        return { id, screen: card.querySelector('.screen'), frame: card.querySelector('.frame'), subs: card.querySelector('.subs') };
+      });
+
+      function fit() {
+        for (const c of cards) c.frame.style.transform = `scale(${c.screen.clientWidth / 1920})`;
+      }
+
+      function draw() {
+        $('size-value').textContent = $('size').value;
+        const phrase = $('phrase').value.trim();
+        for (const c of cards) {
+          const pack = perStyle ? STYLE_PACK[c.id] : $('pack').value;
+          const lines = (phrase ? [SAMPLE[pack][0], phrase] : SAMPLE[pack]).map((text, i) => ({ text, at: new Date(2026, 9, 18, 3, 41, 12 + i * 4) }));
+          const query = new URLSearchParams({ style: c.id, name: $('name').value, size: $('size').value, packs: pack, offset: '12' });
+          LS.render(c.subs, LS.parseConfig('?' + query), lines);
+        }
+        fit();
+      }
+
+      for (const id of ['name', 'size', 'pack', 'phrase']) $(id).addEventListener('input', draw);
+      window.addEventListener('resize', fit);
+      draw();
+    })();
+  </script>
+</body>
+</html>

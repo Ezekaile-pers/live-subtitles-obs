@@ -1,0 +1,5 @@
+# Build output: installers and the module zip go to GitHub Releases, not into the repository
+installer/out/
+*.part
+node_modules/
+models/
