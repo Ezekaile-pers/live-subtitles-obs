@@ -18,20 +18,21 @@
 - **Your name on screen** in the EVE and WoW styles, in your own color. Font size, position, width, the number of lines and the fade time are adjustable.
 - **Slang packs, optional.** Whisper translates game slang literally: «Пробки на скане» comes out as "traffic jams on the scan", «Фортик» as "Portico". The EVE and WoW packs turn these back into "probes on d-scan" and "Fortizar". You can write a pack for your own game in a few lines.
 - **Profanity masked** with asterisks of the same length: English, Russian, transliterated Russian, slurs, and any words you add yourself.
+- **Graphics card or processor, your choice.** By default Whisper runs on the graphics card and translates each phrase once, when you finish it. If your game needs the whole card, run Whisper on the processor.
 - **Everything stays on your PC.** No cloud, no accounts, no API keys, no Node or Python.
 
 ## Install on Windows (2 minutes)
 
 1. Download **`LiveSubtitlesSetup.exe`** from [Releases](../../releases/latest). If huggingface.co is blocked in your network, take **`LiveSubtitlesSetup-offline.exe`** instead: the Whisper model is inside (540 MB).
 2. **Close OBS** and run it. Windows may say "Windows protected your PC" because the installer isn't code-signed: press **More info → Run anyway**. The installer's source code and build script are in [`installer/`](installer/).
-3. Pick a **subtitle style**: *Basic* by default, *EVE Online* or *World of Warcraft*. Optionally type your **name**. Then press **Install**. The installer:
+3. Pick a **subtitle style**: *Basic* by default, *EVE Online* or *World of Warcraft*. Optionally type your **name**. Leave **Run translation on** at the graphics card unless your game stutters while you talk (see [Games and performance](#games-and-performance)); the processor switches the model to Small. Then press **Install**. The installer:
    - copies the module to the **install folder**. By default this is `%LOCALAPPDATA%\Programs\LiveSubtitles`; press **Browse…** to pick any folder on any drive;
    - puts the Whisper model into the `models` folder inside it, so nothing big goes to drive C:. The script hands this file to LocalVocal. The installer downloads the model from Hugging Face and checks its SHA-256, takes it from the offline build, or reuses the copy LocalVocal already downloaded;
    - if LocalVocal isn't installed, downloads its official installer from GitHub and starts it. Go through it to the end;
    - adds the script to your current OBS scene collection, keeping a copy of the collection next to it.
 4. Open OBS → **Tools → Scripts** → `live-subtitles.lua`. Pick your **microphone** and press **Set up everything**. Then press **Show test**, and just talk: the English text appears about a second after each phrase.
 
-The installer needs no admin rights; only the LocalVocal installer asks for them. You can run it again to update: it suggests the folder where Live Subtitles already is, and your own pack (`packs/custom.*`) is kept.
+The installer needs no admin rights; only the LocalVocal installer asks for them. You can run it again to update: it suggests the folder where Live Subtitles already is, and your own pack (`packs/custom.*`) and the script settings are kept. After an update, press **Set up everything** once so that LocalVocal gets the new settings.
 
 To show the subtitles in other scenes, add the existing source there: **+ → Browser → Add Existing → Live Subtitles**.
 
@@ -44,7 +45,7 @@ To show the subtitles in other scenes, add the existing source there: **+ → Br
 ## What you need
 
 - **OBS Studio 32 or newer.** Tested on Windows 10/11. macOS and Linux should work with the manual install but are untested.
-- **A graphics card is strongly recommended.** Whisper Medium translates in about a second on a GPU (AMD, NVIDIA or Intel, through Vulkan). On a processor it lags behind your speech, so use the Small model there.
+- **A graphics card is strongly recommended.** Whisper Medium translates a phrase in under a second on a GPU (AMD, NVIDIA or Intel, through Vulkan). On a processor Whisper is much slower: take the Small model there, and expect subtitles a few seconds after a phrase.
 - About 600 MB of disk space for the model.
 
 ## Settings
@@ -52,8 +53,9 @@ To show the subtitles in other scenes, add the existing source there: **+ → Br
 | Setting | What it does |
 |---|---|
 | Microphone | Where LocalVocal listens. |
-| Whisper model | Medium (default): best translation, needs a GPU. Small: for weak PCs. Large v3: best but heavy. If the model file is in the module's `models` folder (the installer puts it there), LocalVocal uses that file; otherwise it finds or downloads the model by itself. "Keep" leaves LocalVocal's model as it is. A model file you picked in LocalVocal yourself is never replaced. |
-| Run on | The graphics card (default) or the processor. LocalVocal itself uses only the processor until this is changed. |
+| Whisper model | Medium (default): best translation, needs a GPU. Small: for weak PCs and for the processor. Large v3: best but heavy. If the model file is in the module's `models` folder (the installer puts it there), LocalVocal uses that file; otherwise it finds or downloads the model by itself. "Keep" leaves LocalVocal's model as it is. A model file you picked in LocalVocal yourself is never replaced. |
+| Run on | The graphics card (default, fast) or the processor: it leaves the graphics card to your game, but the subtitles come later, so take Small there. LocalVocal itself uses only the processor until this is changed. A new device starts working after you restart OBS. |
+| Text while speaking | Off (default): Whisper translates each phrase once, when you finish it, and the whole phrase appears at once. On: the line appears and grows while you talk, but Whisper re-translates the whole phrase every second, so the graphics card is busy all the time you talk. |
 | Spoken language / Translate to English | What you speak. With translation off you get subtitles in your own language. |
 | Style | `classic` (default), `box`, `eve-photon`, `eve-local`, `wow`. See below. |
 | Speaker name, Name on screen, name color | The name shown by the EVE and WoW styles. "Show" adds it to the other styles too. |
@@ -67,7 +69,7 @@ To show the subtitles in other scenes, add the existing source there: **+ → Br
 | Mask profanity / Your own words | Asterisks for swearing. Your own list adds names, nicknames or anything else. |
 | Text from LocalVocal, Overlay | Source names. Change them only if your LocalVocal already writes into another text source. The script never rewrites a browser source that isn't a Live Subtitles overlay. |
 
-Changes apply to the overlay right away. Pack, language and model changes go into the LocalVocal filter, so press **Set up everything** again after changing them.
+Changes apply to the overlay right away. Pack, language, model, device and *Text while speaking* go into the LocalVocal filter, so press **Set up everything** again after changing them.
 
 ## Styles
 
@@ -100,9 +102,23 @@ To see what Whisper really outputs, open **Tools → Scripts → Script Log**: t
 
 ## What to expect
 
-- The subtitles appear about 1–1.5 s after a phrase. While you talk, the line grows as LocalVocal sends partial results.
+- The subtitles appear about 1–1.5 s after you finish a phrase, the whole phrase at once. With **Text while speaking** on, the line grows while you talk.
 - Whisper is good with sentences and weaker with one-word shouts. It sometimes drops a word, merges two phrases or answers a short phrase with a list of words. The packs fix the frequent mistakes, not all of them.
 - **The microphone must be loud enough.** With quiet peaks around −40 dB, recognition falls apart; at −20 dB it works. If the subtitles stay silent, raise the microphone level in Windows or add a Gain filter before LocalVocal.
+
+## Games and performance
+
+Whisper shares the graphics card with your game. The script sets LocalVocal up to take as little of it as possible:
+
+- **One translation per phrase**, when you finish it. With partial results (*Text while speaking*), Whisper re-translates the whole phrase every second for as long as you talk.
+- **An audio window of about 11.5 s** instead of the full 30 s. LocalVocal phrases are never longer, and each run gets 2–3 times shorter.
+- **Two beams instead of five** when picking words: long phrases translate about twice as fast, with the same result.
+
+If your game still stutters while you talk:
+
+1. **Cap the game's frame rate** in the game or the graphics driver, or lower the graphics quality. A card running at 95–100 % has no room left for Whisper, and every translation becomes a stutter.
+2. **Turn off background game recording** you don't use: Discord Clips, NVIDIA Instant Replay, AMD Instant Replay, Xbox Game Bar captures. They keep encoding your game.
+3. **Set Run on to the processor** and take the Small model: the graphics card stays with your game, and the subtitles come a few seconds after a phrase. Press **Set up everything**, then restart OBS. Medium on a processor usually can't keep up.
 
 ## Troubleshooting
 
@@ -112,7 +128,8 @@ To see what Whisper really outputs, open **Tools → Scripts → Script Log**: t
   - If the test doesn't show up, press **Set up everything** again. In the browser source properties, **"Local file" must stay unchecked**: the script uses a `file:///` URL.
 - **The model doesn't download**: huggingface.co may be blocked in your network. Use `LiveSubtitlesSetup-offline.exe`, turn on a VPN for the download, or put `ggml-medium-q5_0.bin` next to `LiveSubtitlesSetup.exe` and run it.
 - **The antivirus complains about the installer**: it is unsigned and downloads files, which some antiviruses dislike. The source code is in `installer/`, so you can build it yourself or use the manual install.
-- **Lag in game**: Whisper Medium and the game share the GPU. Try Small.
+- **The game stutters while you talk**: see [Games and performance](#games-and-performance).
+- **"Run on" changed, nothing happened**: LocalVocal loads the model on the new device only when OBS starts. Restart OBS.
 - **Wrong font on macOS/Linux**: Bahnschrift and Segoe UI are Windows fonts. Set **Font** to any font you have.
 
 ## Uninstall

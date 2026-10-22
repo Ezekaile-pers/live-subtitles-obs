@@ -3,8 +3,9 @@
 // делает LocalVocal (Roy Shilkrot, GPL-2.0) на whisper.cpp и модели OpenAI Whisper — установщик их не содержит,
 // а скачивает с официальных адресов (сборка -offline несёт модель внутри). MIT License, (c) 2026 Ezekaile.
 // Сборка встроенным в Windows компилятором .NET Framework 4.x: powershell -File installer\build.ps1
-// Без окна: LiveSubtitlesSetup.exe --auto [--dir папка] [--preset basic|eve|wow] [--name Ник] [--model medium|small|large|none]
-//           [--gpu generic|nvidia] [--no-localvocal] [--no-script] [--no-module]; журнал — %TEMP%\LiveSubtitlesSetup.log
+// Без окна: LiveSubtitlesSetup.exe --auto [--dir папка] [--preset basic|eve|wow] [--name Ник] [--model medium|small|large]
+//           [--device gpu|cpu] [--gpu generic|nvidia] [--no-model] [--no-localvocal] [--no-script] [--no-module];
+//           --no-model (или --model none) — модель не качать; журнал — %TEMP%\LiveSubtitlesSetup.log
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -39,6 +40,7 @@ namespace LiveSubtitles
     {
         public bool Module = true, Model = true, LocalVocal = true, Script = true;
         public string ModelId = "medium", Gpu = "generic", Preset = "basic", Name = "";
+        public string Device = "gpu"; // где считать перевод: gpu — видеокарта (быстро), cpu — процессор (видеокарта свободна игре)
         public string Dir; // папка установки модуля и модели; пусто — Setup.DefaultDir()
     }
 
@@ -46,7 +48,7 @@ namespace LiveSubtitles
 
     public static class Setup
     {
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
         public const string ScriptFile = "live-subtitles.lua";
         const string LocalVocalReleases = "https://api.github.com/repos/royshil/obs-localvocal/releases/latest";
 
@@ -237,8 +239,14 @@ namespace LiveSubtitles
             return sb.Append('"').ToString();
         }
 
-        // Стартовые настройки скрипта: базовый стиль по умолчанию, EVE Online и WoW — по выбору.
+        // Стартовые настройки скрипта: базовый стиль по умолчанию, EVE Online и WoW — по выбору; device — где считать
+        // перевод, modelId — какую модель скрипт отдаёт LocalVocal (умолчания скрипта — видеокарта и Medium — не пишем).
         public static string PresetSettings(string preset, string name)
+        {
+            return PresetSettings(preset, name, "gpu", "medium");
+        }
+
+        public static string PresetSettings(string preset, string name, string device, string modelId)
         {
             List<string> parts = new List<string>();
             if (preset == "eve") { parts.Add("\"style\": \"eve-photon\""); parts.Add("\"pack_eve\": true"); }
@@ -246,6 +254,9 @@ namespace LiveSubtitles
             else parts.Add("\"style\": \"classic\"");
             string trimmed = (name ?? "").Trim();
             if (trimmed.Length > 0) parts.Add("\"name\": " + JsonString(trimmed));
+            if (device == "cpu") parts.Add("\"device\": \"cpu\"");
+            ModelInfo model = FindModel(modelId);
+            if (model != null && model != Models[0]) parts.Add("\"model\": " + JsonString(model.Name));
             return "{" + string.Join(", ", parts.ToArray()) + "}";
         }
 
@@ -471,7 +482,7 @@ namespace LiveSubtitles
                 else
                 {
                     string json = System.IO.File.ReadAllText(collection, Encoding.UTF8);
-                    string next = AddScript(json, script, PresetSettings(o.Preset, o.Name));
+                    string next = AddScript(json, script, PresetSettings(o.Preset, o.Name, o.Device, o.ModelId));
                     if (next == json) log(T.S("script_present"));
                     else
                     {
@@ -507,7 +518,9 @@ namespace LiveSubtitles
                     case "--preset": o.Preset = next; i++; break;
                     case "--name": o.Name = next; i++; break;
                     case "--gpu": o.Gpu = next; i++; break;
+                    case "--device": o.Device = next == "cpu" ? "cpu" : "gpu"; i++; break;
                     case "--model": if (next == "none") o.Model = false; else o.ModelId = next; i++; break;
+                    case "--no-model": o.Model = false; break;
                     case "--no-localvocal": o.LocalVocal = false; break;
                     case "--no-script": o.Script = false; break;
                     case "--no-module": o.Module = false; break;
@@ -553,6 +566,10 @@ namespace LiveSubtitles
             { "model_medium", new[] { "Medium — лучший перевод, нужна видеокарта (514 МБ)", "Medium — best translation, needs a GPU (514 MB)" } },
             { "model_small", new[] { "Small — для слабых ПК (181 МБ)", "Small — for weak PCs (181 MB)" } },
             { "model_large", new[] { "Large v3 — лучше всех, тяжёлая (1 ГБ)", "Large v3 — the best, heavy (1 GB)" } },
+            { "device", new[] { "Перевод считать на", "Run translation on" } },
+            { "device_gpu", new[] { "видеокарте — быстро (рекомендуем)", "graphics card — fast (recommended)" } },
+            { "device_cpu", new[] { "процессоре — не трогает видеокарту, медленнее", "processor — leaves the graphics card alone, slower" } },
+            { "device_hint", new[] { "Если игра подлагивает, пока вы говорите, — процессор: субтитры придут на пару секунд позже, модель лучше Small. Поменять можно и потом, в настройках скрипта.", "If your game stutters while you talk, pick the processor: subtitles come a couple of seconds later, Small works best. You can change it later in the script settings." } },
             { "localvocal", new[] { "Плагин LocalVocal для OBS", "LocalVocal plugin for OBS" } },
             { "gpu_generic", new[] { "любая видеокарта (Vulkan) — если не знаете, эта", "any GPU (Vulkan) — if unsure, this one" } },
             { "gpu_nvidia", new[] { "NVIDIA (CUDA, нужны свежие драйверы)", "NVIDIA (CUDA, needs fresh drivers)" } },
@@ -585,7 +602,7 @@ namespace LiveSubtitles
             { "model_beside", new[] { "Модель {0} скопирована из папки установщика: {1}", "Model {0} copied from the installer folder: {1}" } },
             { "model_downloaded", new[] { "Модель {0} скачана и проверена: {1}", "Model {0} downloaded and verified: {1}" } },
             { "bad_hash", new[] { "Файл модели повреждён (не совпал SHA-256) — запустите установку ещё раз.", "The model file is corrupt (SHA-256 mismatch) — run the setup again." } },
-            { "script_present", new[] { "Скрипт Live Subtitles уже есть в OBS.", "The Live Subtitles script is already in OBS." } },
+            { "script_present", new[] { "Скрипт Live Subtitles уже есть в OBS, его настройки остаются как были: стиль, модель и «Считать на» меняются в окне скрипта.", "The Live Subtitles script is already in OBS and keeps its settings: change the style, model and “Run on” in the script window." } },
             { "script_done", new[] { "Скрипт добавлен в OBS, коллекция «{0}» (копия до правки — рядом, .before-live-subtitles).", "Script added to OBS, collection “{0}” (a copy from before is next to it, .before-live-subtitles)." } },
             { "script_obs_running", new[] { "OBS открыт — скрипт добавьте сами: Сервис → Скрипты → + → {0}", "OBS is open — add the script yourself: Tools → Scripts → + → {0}" } },
             { "script_manual", new[] { "Добавьте скрипт сами: OBS → Сервис → Скрипты → + → {0}", "Add the script yourself: OBS → Tools → Scripts → + → {0}" } },
@@ -607,7 +624,7 @@ namespace LiveSubtitles
     public sealed class SetupForm : Form
     {
         readonly CheckBox module = new CheckBox(), model = new CheckBox(), localVocal = new CheckBox(), script = new CheckBox();
-        readonly ComboBox modelList = new ComboBox(), gpuList = new ComboBox(), presetList = new ComboBox();
+        readonly ComboBox modelList = new ComboBox(), deviceList = new ComboBox(), gpuList = new ComboBox(), presetList = new ComboBox();
         readonly TextBox folderBox = new TextBox(), nameBox = new TextBox(), logBox = new TextBox();
         readonly Label folderHint = new Label(), scriptNote = new Label(), obsNote = new Label();
         readonly ProgressBar bar = new ProgressBar();
@@ -616,6 +633,7 @@ namespace LiveSubtitles
 
         static readonly string[] ModelIds = { "medium", "small", "large" };
         static readonly string[] Gpus = { "generic", "nvidia" };
+        static readonly string[] Devices = { "gpu", "cpu" };
         static readonly string[] Presets = { "basic", "eve", "wow" };
         const string FolderName = "LiveSubtitles";
 
@@ -627,7 +645,7 @@ namespace LiveSubtitles
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(660, 650);
+            ClientSize = new Size(660, 710);
 
             TableLayoutPanel table = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(14), AutoScroll = true };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
@@ -669,6 +687,22 @@ namespace LiveSubtitles
             modelList.SelectedIndex = 0;
             table.Controls.Add(model, 0, row);
             table.Controls.Add(modelList, 1, row);
+            row++;
+
+            // Где считать перевод. Процессор медленнее — с ним сразу предлагаем Small вместо Medium.
+            deviceList.DropDownStyle = ComboBoxStyle.DropDownList; deviceList.Dock = DockStyle.Fill;
+            foreach (string device in Devices) deviceList.Items.Add(T.S("device_" + device));
+            deviceList.SelectedIndex = 0;
+            deviceList.SelectedIndexChanged += delegate
+            {
+                if (Devices[Math.Max(0, deviceList.SelectedIndex)] == "cpu" && ModelIds[Math.Max(0, modelList.SelectedIndex)] == "medium")
+                    modelList.SelectedIndex = Array.IndexOf(ModelIds, "small");
+            };
+            table.Controls.Add(new Label { Text = T.S("device"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, row);
+            table.Controls.Add(deviceList, 1, row);
+            row++;
+            Label deviceHint = new Label { Text = T.S("device_hint"), AutoSize = true, MaximumSize = new Size(390, 0), ForeColor = SystemColors.GrayText, Margin = new Padding(3, 0, 3, 8) };
+            table.Controls.Add(deviceHint, 1, row);
             row++;
 
             localVocal.Text = T.S("localvocal"); localVocal.AutoSize = true;
@@ -804,6 +838,7 @@ namespace LiveSubtitles
                 LocalVocal = localVocal.Checked,
                 Script = script.Checked,
                 ModelId = ModelIds[Math.Max(0, modelList.SelectedIndex)],
+                Device = Devices[Math.Max(0, deviceList.SelectedIndex)],
                 Gpu = Gpus[Math.Max(0, gpuList.SelectedIndex)],
                 Preset = Presets[Math.Max(0, presetList.SelectedIndex)],
                 Name = nameBox.Text,

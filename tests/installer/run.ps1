@@ -76,6 +76,12 @@ try {
     Eq ($S::PresetSettings('', '  ')) '{"style": "classic"}' 'unknown -> basic'
     Eq ($S::PresetSettings('eve', 'Pilot')) '{"style": "eve-photon", "pack_eve": true, "name": "Pilot"}' 'eve'
     Eq ($S::PresetSettings('wow', 'Ezekaile')) '{"style": "wow", "pack_wow": true, "name": "Ezekaile"}' 'wow'
+    Eq ($S::PresetSettings('basic', '', 'cpu', 'medium')) '{"style": "classic", "device": "cpu"}' 'processor'
+    Eq ($S::PresetSettings('wow', 'Ezekaile', 'gpu', 'medium')) '{"style": "wow", "pack_wow": true, "name": "Ezekaile"}' 'graphics card is the script default'
+    Eq ($S::PresetSettings('basic', '', 'cpu', 'small')) '{"style": "classic", "device": "cpu", "model": "Whisper Small q5 (181Mb)"}' 'processor with Small'
+    Eq ($S::PresetSettings('eve', 'Pilot', 'gpu', 'large')) '{"style": "eve-photon", "pack_eve": true, "name": "Pilot", "model": "Whisper Large v3 q5 (1Gb)"}' 'Large'
+    Eq ($S::PresetSettings('wow', '', 'gpu', 'medium')) '{"style": "wow", "pack_wow": true}' 'Medium is the script default'
+    Eq ($S::PresetSettings('wow', '', 'gpu', 'tiny')) '{"style": "wow", "pack_wow": true}' 'unknown model: script default'
   }
 
   Check 'PickLocalVocalAsset: official Windows installer by GPU flavor' {
@@ -212,7 +218,7 @@ try {
     Utf8File (Join-Path $appdata 'obs-studio\user.ini') ('[Basic]' + "`r`n" + 'SceneCollection=Test' + "`r`n" + 'SceneCollectionFile=Test.json' + "`r`n") $true
     $scenes = Join-Path $appdata 'obs-studio\basic\scenes\Test.json'
     Utf8File $scenes $collection
-    $psi = New-Object Diagnostics.ProcessStartInfo $Exe, '--auto --no-localvocal --model none --preset eve --name "Space Pilot"'
+    $psi = New-Object Diagnostics.ProcessStartInfo $Exe, '--auto --no-localvocal --model small --no-model --preset eve --name "Space Pilot" --device cpu'
     $psi.UseShellExecute = $false
     $psi.EnvironmentVariables['APPDATA'] = $appdata
     $psi.EnvironmentVariables['LOCALAPPDATA'] = $local
@@ -234,6 +240,9 @@ try {
     Eq $entry.settings.style 'eve-photon' 'preset style'
     Eq $entry.settings.pack_eve $true 'preset pack'
     Eq $entry.settings.name 'Space Pilot' 'speaker name'
+    Eq $entry.settings.device 'cpu' 'translation on the processor'
+    Eq $entry.settings.model 'Whisper Small q5 (181Mb)' 'the chosen model reaches the script'
+    if (Test-Path (Join-Path $dir 'models')) { throw '--no-model downloaded a model' }
     Eq ([IO.File]::ReadAllText($scenes + '.before-live-subtitles')) $collection 'backup of the collection'
   }
 

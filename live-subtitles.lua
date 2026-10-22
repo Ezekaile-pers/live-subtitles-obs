@@ -1,5 +1,5 @@
 --[[
-Live Subtitles for OBS 1.1.0 — английские субтитры вашей речи на стриме. MIT License, (c) 2026 Ezekaile.
+Live Subtitles for OBS 1.2.0 — английские субтитры вашей речи на стриме. MIT License, (c) 2026 Ezekaile.
 
 LocalVocal (Whisper) слушает микрофон, переводит речь на английский и пишет текст в скрытый текстовый источник.
 Этот скрипт раз в 100 мс читает текст и шлёт его событием «live-subtitles» (javascript_event) браузерным источникам
@@ -9,7 +9,7 @@ LocalVocal (Whisper) слушает микрофон, переводит реч�
 ]]
 obs = obslua
 
-local VERSION = '1.1.0'
+local VERSION = '1.2.0'
 local EVENT = 'live-subtitles'
 local LOCALVOCAL = 'transcription_filter_audio_filter'
 local FILTER_NAME = 'Live Subtitles (LocalVocal)'
@@ -53,9 +53,13 @@ local L = {
     model_keep = 'не менять (как сейчас в LocalVocal)',
     model_hint = 'LocalVocal скачает модель сам при первой настройке. Medium — лучший перевод, нужна видеокарта; Small — для слабых ПК; Large — лучше всех, но тяжёлая.',
     device = 'Считать на',
-    device_gpu = 'видеокарте (быстро)',
-    device_cpu = 'процессоре (нет видеокарты)',
+    device_gpu = 'видеокарте — быстро (рекомендуем)',
+    device_cpu = 'процессоре — не трогает видеокарту, медленнее',
     device_keep = 'не менять (как сейчас в LocalVocal)',
+    device_hint = 'Видеокарта переводит фразу примерно за полсекунды. Если игра подлагивает, пока вы говорите: сначала ограничьте частоту кадров в игре — видеокарте нужен запас; не помогло — выберите процессор: субтитры придут на пару секунд позже, модель лучше Small. Новое устройство заработает после перезапуска OBS.',
+    live_text = 'Текст по ходу речи',
+    live_text_hint = 'Фраза появляется и растёт, пока вы говорите. Whisper при этом каждую секунду заново переводит всю фразу — видеокарта (или процессор) занята всё время речи, игры могут подлагивать. Без галки фраза появляется целиком, когда вы договорили.',
+    restart_device = 'Устройство перевода сменится после перезапуска OBS.',
     language = 'Язык речи',
     translate = 'Переводить на английский',
     group_look = 'Вид',
@@ -113,9 +117,13 @@ local L = {
     model_keep = 'keep (as set in LocalVocal)',
     model_hint = 'LocalVocal downloads the model by itself on first setup. Medium translates best and wants a GPU; Small is for weak PCs; Large is the best and the heaviest.',
     device = 'Run on',
-    device_gpu = 'graphics card (fast)',
-    device_cpu = 'processor (no graphics card)',
+    device_gpu = 'graphics card — fast (recommended)',
+    device_cpu = 'processor — leaves the graphics card alone, slower',
     device_keep = 'keep (as set in LocalVocal)',
+    device_hint = 'A graphics card translates a phrase in about half a second. If your game stutters while you talk: first cap the game frame rate — the graphics card needs headroom; if that is not enough, choose the processor: subtitles come a couple of seconds later, the Small model works best. The new device starts working after you restart OBS.',
+    live_text = 'Text while speaking',
+    live_text_hint = 'The phrase appears and grows while you speak. Whisper then re-translates the whole phrase every second — your graphics card (or processor) is busy all the time you talk, games may stutter. Off — the whole phrase appears when you finish it.',
+    restart_device = 'The translation device changes after you restart OBS.',
     language = 'Spoken language',
     translate = 'Translate to English',
     group_look = 'Look',
@@ -366,6 +374,7 @@ local function read_config(s)
     mic = get(s, 'mic'),
     model = get(s, 'model'),
     device = get(s, 'device'),
+    live_text = bool(s, 'live_text'),
     language = get(s, 'language'),
     translate = bool(s, 'translate'),
     style = get(s, 'style'),
@@ -551,6 +560,12 @@ local function model_values(name)
   return { whisper_model_path = name }
 end
 
+-- На процессоре Whisper быстрее с потоками по числу ядер (минус два — игре и OBS), от 4 до 8.
+local function cpu_threads()
+  local n = tonumber(os.getenv('NUMBER_OF_PROCESSORS') or '') or 0
+  return math.max(4, math.min(8, n - 2))
+end
+
 local function localvocal_settings(cfg, packs_dir)
   local s = {
     whisper_language_select = cfg.language,
@@ -560,8 +575,14 @@ local function localvocal_settings(cfg, packs_dir)
     initial_prompt = compose_prompt(packs_dir or PACKS_DIR, cfg.packs or {}),
     filter_words_replace = '[]',
     vad_threshold = 0.5,
-    partial_group = true,
+    -- Скорость (замер на стриме с игрой на той же видеокарте: в момент перевода 8–22 % видеокарты вместо 35–63 %):
+    -- один перевод на законченную фразу — промежуточный текст каждую секунду речи заново переводит всю фразу;
+    partial_group = cfg.live_text == true,
     partial_latency = 1100,
+    -- окно кодировщика ~11,5 с вместо полных 30 — фразы LocalVocal не длиннее ~11 с, прогон в 2–3 раза короче;
+    audio_ctx = 576,
+    -- подбор слов двумя вариантами вместо пяти — длинная фраза вдвое быстрее, перевод тот же.
+    ['beam_search.beam_size'] = 2,
     suppress_blank = true,
     suppress_nst = true,
     buffered_output = false, -- «Buffered output»: строки с прокруткой вместо фразы — лента оверлея с ним ломается
@@ -570,8 +591,23 @@ local function localvocal_settings(cfg, packs_dir)
     for key, value in pairs(model_values(cfg.model)) do s[key] = value end
   end
   -- У LocalVocal по умолчанию -1 — только процессор; 0 — первая видеокарта (нет её — whisper.cpp сам считает на процессоре).
-  if cfg.device == 'cpu' then s.backend_device = -1 elseif cfg.device ~= 'keep' then s.backend_device = 0 end
+  if cfg.device == 'cpu' then
+    s.backend_device = -1
+    s.n_threads = cpu_threads()
+  elseif cfg.device ~= 'keep' then
+    s.backend_device = 0
+    s.n_threads = 4
+  end
   return s
+end
+
+-- Устройство готового фильтра. LocalVocal меняет его только при загрузке модели, поэтому новое «Считать на» у готового
+-- фильтра заработает после перезапуска OBS. Не задано — умолчание LocalVocal, -1 (процессор).
+local function device_of(filter)
+  local current = obs.obs_source_get_settings(filter)
+  local device = obs.obs_data_has_user_value(current, 'backend_device') and obs.obs_data_get_int(current, 'backend_device') or -1
+  obs.obs_data_release(current)
+  return device
 end
 
 local function to_data(values)
@@ -667,6 +703,7 @@ local function ensure_localvocal(mic, cfg)
   if filters ~= nil then
     for _, f in ipairs(filters) do
       if not done and obs.obs_source_get_unversioned_id(f) == LOCALVOCAL then
+        if values.backend_device ~= nil and device_of(f) ~= values.backend_device then state.restart_device = true end
         local data = to_data(keep_own_settings(f, values))
         obs.obs_source_update(f, data)
         obs.obs_data_release(data)
@@ -687,6 +724,8 @@ local function ensure_localvocal(mic, cfg)
   end
 end
 
+local function restart_note() return state.restart_device and (' ' .. T('restart_device')) or '' end
+
 local function compute_status()
   local cfg = config()
   if not localvocal_installed() then return T('no_localvocal') end
@@ -698,7 +737,7 @@ local function compute_status()
   if overlay == 'missing' then return T('no_overlay', cfg.overlay) end
   if overlay == 'foreign' then return T('not_overlay', cfg.overlay) end
   local mic = cfg.mic ~= '' and cfg.mic or found[1].source
-  return T('working', mic, cfg.text_source, cfg.overlay)
+  return T('working', mic, cfg.text_source, cfg.overlay) .. restart_note()
 end
 
 local function setup_all()
@@ -730,7 +769,7 @@ local function setup_all()
   ensure_localvocal(mic, cfg)
   obs.obs_source_release(mic)
   update_overlays()
-  state.status = T('ready', cfg.mic, cfg.text_source, cfg.overlay)
+  state.status = T('ready', cfg.mic, cfg.text_source, cfg.overlay) .. restart_note()
   return state.status
 end
 
@@ -779,6 +818,7 @@ function script_description() return T('description', VERSION) end
 function script_defaults(s)
   obs.obs_data_set_default_string(s, 'model', MODELS[1])
   obs.obs_data_set_default_string(s, 'device', 'gpu')
+  obs.obs_data_set_default_bool(s, 'live_text', false)
   obs.obs_data_set_default_string(s, 'language', 'ru')
   obs.obs_data_set_default_bool(s, 'translate', true)
   obs.obs_data_set_default_string(s, 'style', 'classic')
@@ -810,7 +850,8 @@ function script_properties()
   local models = { { '', T('model_keep') } }
   for _, m in ipairs(MODELS) do models[#models + 1] = { m, m } end
   obs.obs_property_set_long_description(add_list(speech, 'model', models), T('model_hint'))
-  add_list(speech, 'device', { { 'gpu', T('device_gpu') }, { 'cpu', T('device_cpu') }, { 'keep', T('device_keep') } })
+  obs.obs_property_set_long_description(add_list(speech, 'device', { { 'gpu', T('device_gpu') }, { 'cpu', T('device_cpu') }, { 'keep', T('device_keep') } }), T('device_hint'))
+  obs.obs_property_set_long_description(obs.obs_properties_add_bool(speech, 'live_text', T('live_text')), T('live_text_hint'))
   add_list(speech, 'language', LANGUAGES)
   obs.obs_properties_add_bool(speech, 'translate', T('translate'))
   obs.obs_properties_add_group(props, 'group_speech', T('group_speech'), obs.OBS_GROUP_NORMAL, speech)
@@ -883,6 +924,7 @@ LiveSubtitles = {
   localvocal_installed = localvocal_installed,
   find_localvocal = find_localvocal,
   localvocal_settings = localvocal_settings,
+  compute_status = compute_status,
   read_config = read_config,
   tick = tick,
   send_text = send_text,

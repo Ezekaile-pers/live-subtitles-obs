@@ -71,6 +71,7 @@ function M.obs_data_get_string(d, k) local v = get(d, k); return type(v) == 'str
 function M.obs_data_get_int(d, k) local v = get(d, k); return type(v) == 'number' and math.floor(v) or 0 end
 function M.obs_data_get_double(d, k) local v = get(d, k); return type(v) == 'number' and v or 0 end
 function M.obs_data_get_bool(d, k) return get(d, k) == true end
+function M.obs_data_has_user_value(d, k) return d.values[k] ~= nil end
 function M.obs_data_set_string(d, k, v) d.values[k] = v end
 function M.obs_data_set_int(d, k, v) d.values[k] = v end
 function M.obs_data_set_double(d, k, v) d.values[k] = v end

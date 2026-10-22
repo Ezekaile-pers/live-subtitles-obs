@@ -52,7 +52,7 @@
     return out.charAt(0).toUpperCase() + out.slice(1);
   }
 
-  Object.assign(api, { version: '1.1.0', packs, profanityRules: profanity, word, registerPack, registerProfanity, censor, clean });
+  Object.assign(api, { version: '1.2.0', packs, profanityRules: profanity, word, registerPack, registerProfanity, censor, clean });
   root.LiveSubtitles = api;
   if (typeof module === 'object' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);
