@@ -6,6 +6,7 @@
 // Без окна: LiveSubtitlesSetup.exe --auto [--dir папка] [--preset basic|eve|wow] [--name Ник] [--model medium|small|large]
 //           [--device gpu|cpu] [--gpu generic|nvidia] [--no-model] [--no-localvocal] [--no-script] [--no-module];
 //           --no-model (или --model none) — модель не качать; журнал — %TEMP%\LiveSubtitlesSetup.log
+// Обновление (скрипт уже в коллекции): --device и --model уходят в его настройки и в фильтр LocalVocal, стиль и ник не трогаются.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -41,6 +42,7 @@ namespace LiveSubtitles
         public bool Module = true, Model = true, LocalVocal = true, Script = true;
         public string ModelId = "medium", Gpu = "generic", Preset = "basic", Name = "";
         public string Device = "gpu"; // где считать перевод: gpu — видеокарта (быстро), cpu — процессор (видеокарта свободна игре)
+        public bool DeviceChosen, ModelChosen; // обновление: стример сейчас сменил устройство / модель — применить к уже добавленному скрипту
         public string Dir; // папка установки модуля и модели; пусто — Setup.DefaultDir()
     }
 
@@ -48,7 +50,7 @@ namespace LiveSubtitles
 
     public static class Setup
     {
-        public const string Version = "1.2.0";
+        public const string Version = "1.2.1";
         public const string ScriptFile = "live-subtitles.lua";
         const string LocalVocalReleases = "https://api.github.com/repos/royshil/obs-localvocal/releases/latest";
 
@@ -311,6 +313,300 @@ namespace LiveSubtitles
             return result;
         }
 
+        // ---------- обновление: настройки уже добавленного скрипта и его фильтр LocalVocal ----------
+        // Тоже правка текстом: меняются только нужные значения, остальной файл остаётся байт в байт.
+
+        const string LocalVocalId = "transcription_filter_audio_filter";
+
+        // Значение в тексте JSON: s[Start..End); Key — имя члена объекта (у элемента массива — null).
+        sealed class Span
+        {
+            public string Key;
+            public int Start, End;
+        }
+
+        static int SkipWs(string s, int i)
+        {
+            while (i < s.Length && (char.IsWhiteSpace(s[i]) || s[i] == '﻿')) i++;
+            return i;
+        }
+
+        // Строка JSON с кавычки s[i]; возвращает позицию за закрывающей кавычкой.
+        static int ReadString(string s, int i, out string value)
+        {
+            StringBuilder sb = new StringBuilder();
+            for (i++; s[i] != '"'; i++)
+            {
+                if (s[i] != '\\') { sb.Append(s[i]); continue; }
+                char e = s[++i];
+                if (e == 'u') { sb.Append((char)Convert.ToInt32(s.Substring(i + 1, 4), 16)); i += 4; }
+                else sb.Append(e == 'n' ? '\n' : e == 'r' ? '\r' : e == 't' ? '\t' : e == 'b' ? '\b' : e == 'f' ? '\f' : e);
+            }
+            value = sb.ToString();
+            return i + 1;
+        }
+
+        // Члены объекта (s[start] == '{') или элементы массива (s[start] == '['); end — позиция за скобкой.
+        static List<Span> Items(string s, int start, out int end)
+        {
+            List<Span> items = new List<Span>();
+            bool isObject = s[start] == '{';
+            int i = SkipWs(s, start + 1);
+            if (s[i] == (isObject ? '}' : ']')) { end = i + 1; return items; }
+            while (true)
+            {
+                string key = null;
+                if (isObject) i = SkipWs(s, SkipWs(s, ReadString(s, i, out key)) + 1);
+                int valueEnd = SkipValue(s, i);
+                items.Add(new Span { Key = key, Start = i, End = valueEnd });
+                i = SkipWs(s, valueEnd);
+                if (s[i] != ',') { end = i + 1; return items; }
+                i = SkipWs(s, i + 1);
+            }
+        }
+
+        static int SkipValue(string s, int i)
+        {
+            string ignored;
+            int end;
+            if (s[i] == '"') return ReadString(s, i, out ignored);
+            if (s[i] == '{' || s[i] == '[') { Items(s, i, out end); return end; }
+            while (i < s.Length && ",}] \t\r\n".IndexOf(s[i]) < 0) i++;
+            return i;
+        }
+
+        // Член key объекта, который начинается в s[obj]; не объект или члена нет — null.
+        static Span Member(string s, int obj, string key)
+        {
+            if (s[obj] != '{') return null;
+            int end;
+            foreach (Span m in Items(s, obj, out end)) if (m.Key == key) return m;
+            return null;
+        }
+
+        // Элементы массива array; не массив или null — пустой список.
+        static List<Span> Elements(string s, Span array)
+        {
+            int end;
+            return array != null && s[array.Start] == '[' ? Items(s, array.Start, out end) : new List<Span>();
+        }
+
+        // Значение члена как текст: строка — без кавычек, остальное — как записано; объекта или члена нет — fallback.
+        static string Value(string s, Span obj, string key, string fallback)
+        {
+            Span value = obj == null ? null : Member(s, obj.Start, key);
+            if (value == null) return fallback;
+            if (s[value.Start] != '"') return s.Substring(value.Start, value.End - value.Start);
+            string text;
+            ReadString(s, value.Start, out text);
+            return text;
+        }
+
+        // Члены объекта obj: есть — новое значение, нет — добавляются в начало. Значения — готовый текст JSON.
+        static string SetMembers(string s, int obj, List<KeyValuePair<string, string>> values)
+        {
+            foreach (KeyValuePair<string, string> pair in values)
+            {
+                Span old = Member(s, obj, pair.Key);
+                if (old == null)
+                {
+                    bool empty = s[SkipWs(s, obj + 1)] == '}';
+                    s = s.Insert(obj + 1, JsonString(pair.Key) + ": " + pair.Value + (empty ? "" : ", "));
+                }
+                else if (s.Substring(old.Start, old.End - old.Start) != pair.Value)
+                    s = s.Substring(0, old.Start) + pair.Value + s.Substring(old.End);
+            }
+            return s;
+        }
+
+        static KeyValuePair<string, string> Pair(string key, string json) { return new KeyValuePair<string, string>(key, json); }
+
+        // Коллекция сцен — объект JSON; пустая строка, битый файл или не объект — нет.
+        static bool ValidJson(string s)
+        {
+            try { return !string.IsNullOrEmpty(s) && Json().DeserializeObject(s) is Dictionary<string, object>; }
+            catch (Exception) { return false; }
+        }
+
+        static void RequireCollection(string s)
+        {
+            if (!(Json().DeserializeObject(s ?? "") is Dictionary<string, object>)) throw new InvalidDataException("not an OBS scene collection");
+        }
+
+        // Запись Live Subtitles в modules → scripts-tool (из любой папки, как в AddScript) или null.
+        static Span ScriptEntry(string s)
+        {
+            Span modules = Member(s, SkipWs(s, 0), "modules");
+            foreach (Span item in Elements(s, modules == null ? null : Member(s, modules.Start, "scripts-tool")))
+            {
+                string path = Value(s, item, "path", null);
+                if (path != null && path.Replace('\\', '/').EndsWith("/" + ScriptFile, StringComparison.OrdinalIgnoreCase)) return item;
+            }
+            return null;
+        }
+
+        // Объект настроек уже добавленного скрипта или null.
+        static Span ScriptSettings(string s)
+        {
+            Span entry = ScriptEntry(s);
+            Span settings = entry == null ? null : Member(s, entry.Start, "settings");
+            return settings != null && s[settings.Start] == '{' ? settings : null;
+        }
+
+        // Настройки первого фильтра LocalVocal на источнике mic — там же, где его ищет скрипт: среди источников и
+        // глобальных аудиоустройств OBS («Мик/Доп.», «Звук рабочего стола» лежат в корне коллекции, не в sources).
+        static Span LocalVocalSettings(string s, string mic)
+        {
+            if (string.IsNullOrEmpty(mic)) return null;
+            int root = SkipWs(s, 0), end;
+            List<Span> candidates = Elements(s, Member(s, root, "sources"));
+            foreach (Span m in Items(s, root, out end))
+                if (Regex.IsMatch(m.Key, "^(DesktopAudioDevice|AuxAudioDevice)\\d+$")) candidates.Add(m);
+            foreach (Span source in candidates)
+            {
+                if (s[source.Start] != '{' || Value(s, source, "name", null) != mic) continue;
+                foreach (Span f in Elements(s, Member(s, source.Start, "filters")))
+                {
+                    string id = Value(s, f, "id", null);
+                    if (id == null || Regex.Replace(id, "_v\\d+$", "") != LocalVocalId) continue;
+                    Span settings = Member(s, f.Start, "settings");
+                    return settings != null && s[settings.Start] == '{' ? settings : null;
+                }
+            }
+            return null;
+        }
+
+        public static string CurrentCollectionJson()
+        {
+            try
+            {
+                string path = CurrentCollectionPath();
+                return path == null ? null : System.IO.File.ReadAllText(path, Encoding.UTF8);
+            }
+            catch (Exception) { return null; }
+        }
+
+        // Live Subtitles уже добавлен в эту коллекцию — установщик его обновляет.
+        public static bool ScriptAdded(string json)
+        {
+            return ValidJson(json) && ScriptEntry(json) != null;
+        }
+
+        // Настройка уже добавленного скрипта (строка — без кавычек); нет значения — fallback; скрипта нет — null.
+        public static string ScriptSetting(string json, string key, string fallback)
+        {
+            if (!ValidJson(json)) return null;
+            Span settings = ScriptSettings(json);
+            return settings == null ? null : Value(json, settings, key, fallback);
+        }
+
+        // Где уже добавленный скрипт считает перевод: gpu, cpu или keep (нет значения — умолчание скрипта, gpu).
+        public static string ScriptDevice(string json) { return ScriptSetting(json, "device", "gpu"); }
+
+        // Пресет установщика, ближайший к стилю уже добавленного скрипта (окно показывает его при обновлении).
+        public static string ScriptPreset(string json)
+        {
+            string style = ScriptSetting(json, "style", "classic");
+            if (style == null) return null;
+            return style.StartsWith("eve-") ? "eve" : style == "wow" ? "wow" : "basic";
+        }
+
+        // Какую модель берёт уже добавленный скрипт: medium, small, large; «не менять» — ""; нет значения — умолчание (medium).
+        public static string ScriptModelId(string json)
+        {
+            if (!ValidJson(json)) return null;
+            Span settings = ScriptSettings(json);
+            if (settings == null) return null;
+            ModelInfo model = FindModelByName(Value(json, settings, "model", Models[0].Name));
+            return model == null ? "" : model.Id;
+        }
+
+        static ModelInfo FindModelByName(string name)
+        {
+            foreach (ModelInfo m in Models) if (m.Name == name) return m;
+            return null;
+        }
+
+        // Обновление: члены patchJson (объект) — в настройки уже добавленного скрипта; скрипта нет — коллекция без изменений.
+        public static string SetScriptSettings(string json, string patchJson)
+        {
+            RequireCollection(json);
+            Span settings = ScriptSettings(json);
+            int end;
+            List<KeyValuePair<string, string>> values = new List<KeyValuePair<string, string>>();
+            foreach (Span m in Items(patchJson, SkipWs(patchJson, 0), out end))
+                values.Add(Pair(m.Key, patchJson.Substring(m.Start, m.End - m.Start)));
+            if (settings == null || values.Count == 0) return json;
+            string result = SetMembers(json, settings.Start, values);
+            Json().DeserializeObject(result);
+            return result;
+        }
+
+        // На процессоре — потоков по числу логических ядер минус два (игре и OBS), от 4 до 8; так же считает скрипт.
+        public static int CpuThreads(int processors) { return Math.Max(4, Math.Min(8, processors - 2)); }
+
+        // Обновление: фильтр LocalVocal на микрофоне скрипта получает устройство, модель и скорость — то же, что поставила бы
+        // кнопка «Настроить всё» (localvocal_settings и keep_own_settings в live-subtitles.lua). Устройство LocalVocal
+        // меняет только при загрузке модели, а правка идёт, пока OBS закрыт: при запуске модель сразу грузится куда надо.
+        // Фильтра ещё нет (не нажимали «Настроить всё») — коллекция без изменений.
+        public static string UpdateLocalVocal(string json)
+        {
+            RequireCollection(json);
+            Span settings = ScriptSettings(json);
+            Span filter = settings == null ? null : LocalVocalSettings(json, Value(json, settings, "mic", ""));
+            if (filter == null) return json;
+            List<KeyValuePair<string, string>> values = new List<KeyValuePair<string, string>>();
+            values.Add(Pair("partial_group", Value(json, settings, "live_text", "false") == "true" ? "true" : "false"));
+            values.Add(Pair("partial_latency", "1100"));
+            values.Add(Pair("audio_ctx", "576"));
+            values.Add(Pair("beam_search.beam_size", "2"));
+            string device = Value(json, settings, "device", "gpu");
+            if (device == "cpu")
+            {
+                values.Add(Pair("backend_device", "-1"));
+                values.Add(Pair("n_threads", CpuThreads(Environment.ProcessorCount).ToString(CultureInfo.InvariantCulture)));
+            }
+            else if (device != "keep")
+            {
+                values.Add(Pair("backend_device", "0"));
+                values.Add(Pair("n_threads", "4"));
+            }
+            string model = Value(json, settings, "model", Models[0].Name);
+            string path = Value(json, ScriptEntry(json), "path", "").Replace('\\', '/');
+            string models = path.Substring(0, path.LastIndexOf('/') + 1) + "models/";
+            bool own = Value(json, filter, "whisper_model_path", "") == "!!!external!!!"
+                && !Value(json, filter, "whisper_model_path_external", "").Replace('\\', '/').StartsWith(models, StringComparison.OrdinalIgnoreCase);
+            if (model != "" && !own)
+            {
+                ModelInfo info = FindModelByName(model);
+                if (info != null && System.IO.File.Exists(models + info.File))
+                {
+                    values.Add(Pair("whisper_model_path", JsonString("!!!external!!!")));
+                    values.Add(Pair("whisper_model_path_external", JsonString(models + info.File)));
+                }
+                else values.Add(Pair("whisper_model_path", JsonString(model)));
+            }
+            string result = SetMembers(json, filter.Start, values);
+            Json().DeserializeObject(result);
+            return result;
+        }
+
+        static bool HasLocalVocal(string json)
+        {
+            Span settings = ScriptSettings(json);
+            return settings != null && LocalVocalSettings(json, Value(json, settings, "mic", "")) != null;
+        }
+
+        // Что стример выбрал сейчас для уже добавленного скрипта: только то, что он менял (в окне — список, без окна — ключ).
+        static string ScriptPatch(Options o)
+        {
+            List<string> parts = new List<string>();
+            if (o.DeviceChosen) parts.Add("\"device\": " + JsonString(o.Device));
+            ModelInfo model = FindModel(o.ModelId);
+            if (o.ModelChosen && model != null) parts.Add("\"model\": " + JsonString(model.Name));
+            return "{" + string.Join(", ", parts.ToArray()) + "}";
+        }
+
         // ---------- файлы ----------
 
         static readonly string[] StreamerFiles = { "packs/custom.js", "packs/custom.prompt.txt" };
@@ -473,6 +769,7 @@ namespace LiveSubtitles
                 log(T.F("model_" + how, m.Name, how == "localvocal" ? LocalVocalModelPath(m) : ModuleModelPath(dir, m)));
             }
 
+            bool ready = false; // обновление, и фильтр LocalVocal уже настроен: «Настроить всё» нажимать не нужно
             if (o.Script)
             {
                 string collection = CurrentCollectionPath();
@@ -483,16 +780,33 @@ namespace LiveSubtitles
                 {
                     string json = System.IO.File.ReadAllText(collection, Encoding.UTF8);
                     string next = AddScript(json, script, PresetSettings(o.Preset, o.Name, o.Device, o.ModelId));
-                    if (next == json) log(T.S("script_present"));
-                    else
+                    if (next != json)
                     {
                         System.IO.File.Copy(collection, collection + ".before-live-subtitles", true);
                         System.IO.File.WriteAllText(collection, next, new UTF8Encoding(false));
                         log(T.F("script_done", Path.GetFileNameWithoutExtension(collection)));
                     }
+                    else
+                    {
+                        // Обновление: выбранные сейчас устройство и модель — в настройки скрипта, а в фильтр LocalVocal — то,
+                        // что поставила бы кнопка «Настроить всё»: OBS при запуске сразу работает с новыми настройками.
+                        next = UpdateLocalVocal(SetScriptSettings(json, ScriptPatch(o)));
+                        string copy = ".before-live-subtitles-" + Version;
+                        if (next != json)
+                        {
+                            System.IO.File.Copy(collection, collection + copy, true);
+                            System.IO.File.WriteAllText(collection, next, new UTF8Encoding(false));
+                        }
+                        string device = ScriptDevice(next), model = ScriptModelId(next);
+                        log(T.F(next != json ? "script_updated" : "script_present",
+                            T.S(device == "cpu" ? "on_cpu" : device == "keep" ? "on_keep" : "on_gpu"),
+                            model == "" ? T.S("model_as_set") : FindModel(model).Name, copy));
+                        ready = HasLocalVocal(next);
+                        if (!ready) log(T.S("setup_needed"));
+                    }
                 }
             }
-            log(T.S("finish"));
+            log(T.S(ready ? "finish_update" : "finish"));
         }
 
         // ---------- запуск ----------
@@ -518,8 +832,8 @@ namespace LiveSubtitles
                     case "--preset": o.Preset = next; i++; break;
                     case "--name": o.Name = next; i++; break;
                     case "--gpu": o.Gpu = next; i++; break;
-                    case "--device": o.Device = next == "cpu" ? "cpu" : "gpu"; i++; break;
-                    case "--model": if (next == "none") o.Model = false; else o.ModelId = next; i++; break;
+                    case "--device": o.Device = next == "cpu" ? "cpu" : "gpu"; o.DeviceChosen = true; i++; break;
+                    case "--model": if (next == "none") o.Model = false; else { o.ModelId = next; o.ModelChosen = true; } i++; break;
                     case "--no-model": o.Model = false; break;
                     case "--no-localvocal": o.LocalVocal = false; break;
                     case "--no-script": o.Script = false; break;
@@ -569,12 +883,17 @@ namespace LiveSubtitles
             { "device", new[] { "Перевод считать на", "Run translation on" } },
             { "device_gpu", new[] { "видеокарте — быстро (рекомендуем)", "graphics card — fast (recommended)" } },
             { "device_cpu", new[] { "процессоре — не трогает видеокарту, медленнее", "processor — leaves the graphics card alone, slower" } },
-            { "device_hint", new[] { "Если игра подлагивает, пока вы говорите, — процессор: субтитры придут на пару секунд позже, модель лучше Small. Поменять можно и потом, в настройках скрипта.", "If your game stutters while you talk, pick the processor: subtitles come a couple of seconds later, Small works best. You can change it later in the script settings." } },
+            { "device_hint", new[] { "Если игра подлагивает, пока вы говорите, — процессор: субтитры придут на пару секунд позже, модель лучше Small. Поменять можно и потом: запустите установщик ещё раз или смените в окне скрипта.", "If your game stutters while you talk, pick the processor: subtitles come a couple of seconds later, Small works best. You can change it later: run the installer again or change it in the script window." } },
+            { "on_gpu", new[] { "видеокарте", "graphics card" } },
+            { "on_cpu", new[] { "процессоре", "processor" } },
+            { "on_keep", new[] { "устройстве из настроек LocalVocal", "device set in LocalVocal" } },
+            { "model_as_set", new[] { "как в LocalVocal", "as set in LocalVocal" } },
             { "localvocal", new[] { "Плагин LocalVocal для OBS", "LocalVocal plugin for OBS" } },
             { "gpu_generic", new[] { "любая видеокарта (Vulkan) — если не знаете, эта", "any GPU (Vulkan) — if unsure, this one" } },
             { "gpu_nvidia", new[] { "NVIDIA (CUDA, нужны свежие драйверы)", "NVIDIA (CUDA, needs fresh drivers)" } },
             { "installed", new[] { "уже установлен", "already installed" } },
             { "script", new[] { "Добавить скрипт в OBS", "Add the script to OBS" } },
+            { "script_update", new[] { "Обновить настройки в OBS", "Update the settings in OBS" } },
             { "collection", new[] { "коллекция сцен «{0}»", "scene collection “{0}”" } },
             { "no_collection", new[] { "коллекция сцен не найдена — добавите скрипт сами", "no scene collection found — you will add the script yourself" } },
             { "preset", new[] { "Стиль субтитров", "Subtitle style" } },
@@ -602,7 +921,10 @@ namespace LiveSubtitles
             { "model_beside", new[] { "Модель {0} скопирована из папки установщика: {1}", "Model {0} copied from the installer folder: {1}" } },
             { "model_downloaded", new[] { "Модель {0} скачана и проверена: {1}", "Model {0} downloaded and verified: {1}" } },
             { "bad_hash", new[] { "Файл модели повреждён (не совпал SHA-256) — запустите установку ещё раз.", "The model file is corrupt (SHA-256 mismatch) — run the setup again." } },
-            { "script_present", new[] { "Скрипт Live Subtitles уже есть в OBS, его настройки остаются как были: стиль, модель и «Считать на» меняются в окне скрипта.", "The Live Subtitles script is already in OBS and keeps its settings: change the style, model and “Run on” in the script window." } },
+            { "script_present", new[] { "Live Subtitles уже есть в OBS, менять нечего: перевод на {0}, модель — {1}.", "Live Subtitles is already in OBS, nothing to change: translation on the {0}, model: {1}." } },
+            { "script_updated", new[] { "Live Subtitles уже был в OBS — обновил его настройки и фильтр LocalVocal: перевод на {0}, модель — {1} (копия коллекции до правки — рядом, {2}).", "Live Subtitles was already in OBS; its settings and LocalVocal filter are updated: translation on the {0}, model: {1} (a copy of the collection from before is next to it, {2})." } },
+            { "setup_needed", new[] { "Фильтра LocalVocal на микрофоне скрипта ещё нет — его создаст кнопка «Настроить всё» в окне скрипта.", "There is no LocalVocal filter on the script microphone yet: “Set up everything” in the script window creates it." } },
+            { "finish_update", new[] { "Готово. Запустите OBS — субтитры заработают с этими настройками, «Настроить всё» нажимать не нужно. Стиль и ник меняются в окне скрипта.", "Done. Start OBS: the subtitles run with these settings, no need to press “Set up everything”. Style and name are changed in the script window." } },
             { "script_done", new[] { "Скрипт добавлен в OBS, коллекция «{0}» (копия до правки — рядом, .before-live-subtitles).", "Script added to OBS, collection “{0}” (a copy from before is next to it, .before-live-subtitles)." } },
             { "script_obs_running", new[] { "OBS открыт — скрипт добавьте сами: Сервис → Скрипты → + → {0}", "OBS is open — add the script yourself: Tools → Scripts → + → {0}" } },
             { "script_manual", new[] { "Добавьте скрипт сами: OBS → Сервис → Скрипты → + → {0}", "Add the script yourself: OBS → Tools → Scripts → + → {0}" } },
@@ -630,6 +952,9 @@ namespace LiveSubtitles
         readonly ProgressBar bar = new ProgressBar();
         readonly Button browse = new Button(), install = new Button(), close = new Button(), openObs = new Button();
         volatile bool closing;
+        // Обновление: списки показывают, что уже стоит у скрипта; к нему применяется только то, что стример сменил.
+        readonly string current = Setup.CurrentCollectionJson();
+        int initialModel, initialDevice;
 
         static readonly string[] ModelIds = { "medium", "small", "large" };
         static readonly string[] Gpus = { "generic", "nvidia" };
@@ -684,7 +1009,7 @@ namespace LiveSubtitles
             model.Text = T.S("model"); model.Checked = true; model.AutoSize = true;
             modelList.DropDownStyle = ComboBoxStyle.DropDownList; modelList.Dock = DockStyle.Fill;
             foreach (string id in ModelIds) modelList.Items.Add(T.S("model_" + id));
-            modelList.SelectedIndex = 0;
+            modelList.SelectedIndex = Math.Max(0, Array.IndexOf(ModelIds, Setup.ScriptModelId(current)));
             table.Controls.Add(model, 0, row);
             table.Controls.Add(modelList, 1, row);
             row++;
@@ -692,7 +1017,9 @@ namespace LiveSubtitles
             // Где считать перевод. Процессор медленнее — с ним сразу предлагаем Small вместо Medium.
             deviceList.DropDownStyle = ComboBoxStyle.DropDownList; deviceList.Dock = DockStyle.Fill;
             foreach (string device in Devices) deviceList.Items.Add(T.S("device_" + device));
-            deviceList.SelectedIndex = 0;
+            deviceList.SelectedIndex = Setup.ScriptDevice(current) == "cpu" ? 1 : 0;
+            initialModel = modelList.SelectedIndex;
+            initialDevice = deviceList.SelectedIndex;
             deviceList.SelectedIndexChanged += delegate
             {
                 if (Devices[Math.Max(0, deviceList.SelectedIndex)] == "cpu" && ModelIds[Math.Max(0, modelList.SelectedIndex)] == "medium")
@@ -724,7 +1051,8 @@ namespace LiveSubtitles
             row++;
 
             string collection = Setup.CurrentCollectionName();
-            script.Text = T.S("script"); script.AutoSize = true; script.Checked = collection != null; script.Enabled = collection != null;
+            bool added = Setup.ScriptAdded(current);
+            script.Text = T.S(added ? "script_update" : "script"); script.AutoSize = true; script.Checked = collection != null; script.Enabled = collection != null;
             scriptNote.Text = collection != null ? T.F("collection", collection) : T.S("no_collection");
             scriptNote.AutoSize = true; scriptNote.MaximumSize = new Size(390, 0); scriptNote.ForeColor = SystemColors.GrayText;
             table.Controls.Add(script, 0, row);
@@ -733,12 +1061,16 @@ namespace LiveSubtitles
 
             presetList.DropDownStyle = ComboBoxStyle.DropDownList; presetList.Dock = DockStyle.Fill;
             foreach (string preset in Presets) presetList.Items.Add(T.S("preset_" + preset));
-            presetList.SelectedIndex = 0;
+            // Обновление: стиль и ник уже добавленного скрипта меняются в окне скрипта, здесь они только видны.
+            presetList.SelectedIndex = Math.Max(0, Array.IndexOf(Presets, Setup.ScriptPreset(current)));
+            presetList.Enabled = !added;
             table.Controls.Add(new Label { Text = T.S("preset"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, row);
             table.Controls.Add(presetList, 1, row);
             row++;
 
             nameBox.Dock = DockStyle.Fill;
+            nameBox.Text = Setup.ScriptSetting(current, "name", "") ?? "";
+            nameBox.Enabled = !added;
             table.Controls.Add(new Label { Text = T.S("name"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, row);
             table.Controls.Add(nameBox, 1, row);
             row++;
@@ -839,6 +1171,8 @@ namespace LiveSubtitles
                 Script = script.Checked,
                 ModelId = ModelIds[Math.Max(0, modelList.SelectedIndex)],
                 Device = Devices[Math.Max(0, deviceList.SelectedIndex)],
+                DeviceChosen = deviceList.SelectedIndex != initialDevice,
+                ModelChosen = modelList.SelectedIndex != initialModel,
                 Gpu = Gpus[Math.Max(0, gpuList.SelectedIndex)],
                 Preset = Presets[Math.Max(0, presetList.SelectedIndex)],
                 Name = nameBox.Text,

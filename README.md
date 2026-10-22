@@ -32,7 +32,7 @@
    - adds the script to your current OBS scene collection, keeping a copy of the collection next to it.
 4. Open OBS → **Tools → Scripts** → `live-subtitles.lua`. Pick your **microphone** and press **Set up everything**. Then press **Show test**, and just talk: the English text appears about a second after each phrase.
 
-The installer needs no admin rights; only the LocalVocal installer asks for them. You can run it again to update: it suggests the folder where Live Subtitles already is, and your own pack (`packs/custom.*`) and the script settings are kept. After an update, press **Set up everything** once so that LocalVocal gets the new settings.
+The installer needs no admin rights; only the LocalVocal installer asks for them. You can run it again to update. It suggests the folder where Live Subtitles already is and shows the model and **Run translation on** your script uses. Your own pack (`packs/custom.*`) and the script settings are kept, except what you change in the installer: a new model or device goes into the script and straight into the LocalVocal filter, together with the current speed settings. Then just start OBS.
 
 To show the subtitles in other scenes, add the existing source there: **+ → Browser → Add Existing → Live Subtitles**.
 
@@ -118,7 +118,9 @@ If your game still stutters while you talk:
 
 1. **Cap the game's frame rate** in the game or the graphics driver, or lower the graphics quality. A card running at 95–100 % has no room left for Whisper, and every translation becomes a stutter.
 2. **Turn off background game recording** you don't use: Discord Clips, NVIDIA Instant Replay, AMD Instant Replay, Xbox Game Bar captures. They keep encoding your game.
-3. **Set Run on to the processor** and take the Small model: the graphics card stays with your game, and the subtitles come a few seconds after a phrase. Press **Set up everything**, then restart OBS. Medium on a processor usually can't keep up.
+3. **Move Whisper to the processor** with the Small model: the graphics card stays with your game, and the subtitles come a few seconds after a phrase. Medium on a processor usually can't keep up. Two ways:
+   - Close OBS, run the installer again, pick the processor in **Run translation on** (the model switches to Small), press **Install** and start OBS.
+   - Or in the script window: **Run on** → processor, model Small, **Set up everything**, then restart OBS.
 
 ## Troubleshooting
 

@@ -29,6 +29,38 @@ $collection = '{' + $nl + '    "name": "Test",' + $nl + '    "sources": [],' + $
 $ours = 'C:\Users\x\AppData\Local\Programs\LiveSubtitles\live-subtitles.lua'
 $oursEntry = '{"path": "C:/Users/x/AppData/Local/Programs/LiveSubtitles/live-subtitles.lua", "settings": {"style": "classic"}}'
 
+# A collection the way OBS writes it, with Live Subtitles already added: another script and another source carry the
+# same keys ("device", a LocalVocal filter) and must stay untouched.
+function ObsCollection([string]$scriptPath, [string]$scriptSettings, [string]$filterSettings) {
+  return '{' + $nl +
+    '    "name": "Test",' + $nl +
+    '    "sources": [' + $nl +
+    '        {' + $nl +
+    '            "name": "Desktop",' + $nl +
+    '            "id": "wasapi_output_capture",' + $nl +
+    '            "settings": {"device": "keep-me", "device_id": "default"},' + $nl +
+    '            "filters": [{"id": "transcription_filter_audio_filter", "name": "Other", "settings": {"audio_ctx": 0}}]' + $nl +
+    '        },' + $nl +
+    '        {' + $nl +
+    '            "name": "Mic",' + $nl +
+    '            "id": "wasapi_input_capture",' + $nl +
+    '            "settings": {"device_id": "{0.0.1.00000000}.{abc}"},' + $nl +
+    '            "filters": [' + $nl +
+    '                {"id": "noise_suppress_filter_v2", "name": "Noise", "settings": {"method": "rnnoise"}},' + $nl +
+    '                {"id": "transcription_filter_audio_filter", "versioned_id": "transcription_filter_audio_filter", "name": "LocalVocal", "settings": ' + $filterSettings + '}' + $nl +
+    '            ]' + $nl +
+    '        }' + $nl +
+    '    ],' + $nl +
+    '    "modules": {' + $nl +
+    '        "scripts-tool": [' + $nl +
+    '            {"path": "C:/x/other.lua", "settings": {"device": "keep-me"}},' + $nl +
+    '            {"path": "' + $scriptPath + '", "settings": ' + $scriptSettings + '}' + $nl +
+    '        ],' + $nl +
+    '        "output-timer": {}' + $nl +
+    '    }' + $nl +
+    '}'
+}
+
 try {
   if (-not $Exe) {
     $out = Join-Path $tmp 'out'
@@ -82,6 +114,101 @@ try {
     Eq ($S::PresetSettings('eve', 'Pilot', 'gpu', 'large')) '{"style": "eve-photon", "pack_eve": true, "name": "Pilot", "model": "Whisper Large v3 q5 (1Gb)"}' 'Large'
     Eq ($S::PresetSettings('wow', '', 'gpu', 'medium')) '{"style": "wow", "pack_wow": true}' 'Medium is the script default'
     Eq ($S::PresetSettings('wow', '', 'gpu', 'tiny')) '{"style": "wow", "pack_wow": true}' 'unknown model: script default'
+  }
+
+  Check 'SetScriptSettings: the added script gets the new device and model in place, the rest of the file byte for byte' {
+    $before = ObsCollection 'C:/Games/Live Subtitles/live-subtitles.lua' ('{"mic": "' + (U '\u041c\u0438\u043a') + '", "name": "Ez \"the\" One", "device": "gpu", "colors": {"name": "#ff0"}}') '{}'
+    $res = $S::SetScriptSettings($before, '{"device": "cpu", "model": "Whisper Small q5 (181Mb)"}')
+    $c = ConvertFrom-Json $res
+    $entry = $c.modules.'scripts-tool'[1]
+    Eq $entry.settings.device 'cpu' 'device replaced'
+    Eq $entry.settings.model 'Whisper Small q5 (181Mb)' 'model added'
+    Eq $entry.settings.mic (U '\u041c\u0438\u043a') 'Cyrillic kept'
+    Eq $entry.settings.name 'Ez "the" One' 'escaped quotes kept'
+    Eq $entry.settings.colors.name '#ff0' 'nested object kept'
+    Eq $c.modules.'scripts-tool'[0].settings.device 'keep-me' 'another script untouched'
+    Eq $c.sources[0].settings.device 'keep-me' 'source settings untouched'
+    $open = $before.IndexOf('"settings": {"mic"') + 12
+    $close = $before.IndexOf('"#ff0"}}') + 7
+    if (-not $res.StartsWith($before.Substring(0, $open + 1))) { throw ('text before the settings changed: ' + $res) }
+    if (-not $res.EndsWith($before.Substring($close))) { throw ('text after the settings changed: ' + $res) }
+    Eq ($S::SetScriptSettings($before, '{}')) $before 'nothing to change'
+    $none = ObsCollection 'C:/x/not-ours.lua' '{"device": "gpu"}' '{}'
+    Eq ($S::SetScriptSettings($none, '{"device": "cpu"}')) $none 'no Live Subtitles script: unchanged'
+    $refused = $false
+    try { [void]$S::SetScriptSettings('{"modules": {', '{"device": "cpu"}') } catch { $refused = $true }
+    if (-not $refused) { throw 'broken JSON was accepted' }
+  }
+
+  Check 'UpdateLocalVocal: the filter on the script microphone gets the device, model and speed of Set up everything' {
+    $dir = Join-Path $tmp ('ulv\' + (U '\u0418\u0433\u0440\u044b'))
+    Utf8File (Join-Path $dir 'models\ggml-small-q5_1.bin') 'x'
+    $slash = $dir.Replace('\', '/')
+    $script = $slash + '/live-subtitles.lua'
+    $old = '{"whisper_model_path": "!!!external!!!", "whisper_model_path_external": "' + $slash + '/models/ggml-medium-q5_0.bin", "partial_group": true, "backend_device": 0, "initial_prompt": "Tom, Mage", "vad_threshold": 0.5}'
+    $res = $S::UpdateLocalVocal((ObsCollection $script '{"mic": "Mic", "device": "cpu", "model": "Whisper Small q5 (181Mb)"}' $old))
+    $c = ConvertFrom-Json $res
+    $f = $c.sources[1].filters[1].settings
+    Eq $f.backend_device -1 'processor'
+    Eq $f.n_threads ($S::CpuThreads([Environment]::ProcessorCount)) 'processor threads'
+    Eq $f.partial_group $false 'one translation per phrase'
+    Eq $f.partial_latency 1100 'partial latency'
+    Eq $f.audio_ctx 576 'audio window'
+    Eq $f.'beam_search.beam_size' 2 'two beams'
+    Eq $f.whisper_model_path '!!!external!!!' 'model file from the module'
+    Eq $f.whisper_model_path_external ($slash + '/models/ggml-small-q5_1.bin') 'Small from the models folder'
+    Eq $f.initial_prompt 'Tom, Mage' 'the hint stays'
+    Eq $f.vad_threshold 0.5 'other LocalVocal settings stay'
+    Eq $c.sources[0].filters[0].settings.audio_ctx 0 'a LocalVocal filter on another source stays'
+    Eq ($S::UpdateLocalVocal($res)) $res 'second run: nothing to change'
+
+    $f = (ConvertFrom-Json ($S::UpdateLocalVocal((ObsCollection $script '{"mic": "Mic", "live_text": true}' '{"partial_group": false, "backend_device": -1, "n_threads": 8}')))).sources[1].filters[1].settings
+    Eq $f.backend_device 0 'graphics card by default'
+    Eq $f.n_threads 4 'four threads on the graphics card'
+    Eq $f.partial_group $true 'Text while speaking'
+    Eq $f.whisper_model_path 'Whisper Medium q5 (514Mb)' 'Medium by default, by name: no file in the module, LocalVocal downloads it'
+
+    $f = (ConvertFrom-Json ($S::UpdateLocalVocal((ObsCollection $script '{"mic": "Mic", "device": "keep", "model": ""}' '{"backend_device": -1, "whisper_model_path": "Whisper Large v3 q5 (1Gb)"}')))).sources[1].filters[1].settings
+    Eq $f.backend_device -1 'device kept'
+    if ($f.PSObject.Properties['n_threads']) { throw 'threads written for keep' }
+    Eq $f.whisper_model_path 'Whisper Large v3 q5 (1Gb)' 'model kept'
+    Eq $f.audio_ctx 576 'speed applied anyway'
+
+    $own = '{"whisper_model_path": "!!!external!!!", "whisper_model_path_external": "D:/Models/my-whisper.bin"}'
+    $f = (ConvertFrom-Json ($S::UpdateLocalVocal((ObsCollection $script '{"mic": "Mic", "model": "Whisper Small q5 (181Mb)"}' $own)))).sources[1].filters[1].settings
+    Eq $f.whisper_model_path_external 'D:/Models/my-whisper.bin' 'the streamer own model file stays'
+
+    $aux = '{"AuxAudioDevice1": {"name": "Mic/Aux", "id": "wasapi_input_capture", "filters": [{"id": "transcription_filter_audio_filter", "settings": {"backend_device": 0}}]}, "sources": [], "modules": {"scripts-tool": [{"path": "' + $script + '", "settings": {"mic": "Mic/Aux", "device": "cpu"}}]}}'
+    Eq (ConvertFrom-Json ($S::UpdateLocalVocal($aux))).AuxAudioDevice1.filters[0].settings.backend_device -1 'the global Mic/Aux device'
+
+    $json = ObsCollection $script '{"device": "cpu"}' '{"backend_device": 0}'
+    Eq ($S::UpdateLocalVocal($json)) $json 'no microphone in the script settings yet'
+    $json = ObsCollection 'C:/x/not-ours.lua' '{"mic": "Mic", "device": "cpu"}' '{"backend_device": 0}'
+    Eq ($S::UpdateLocalVocal($json)) $json 'no Live Subtitles script'
+  }
+
+  Check 'CpuThreads, ScriptDevice and ScriptModelId: processor threads and what the window preselects on an update' {
+    Eq ($S::CpuThreads(12)) 8 '12 logical processors'
+    Eq ($S::CpuThreads(8)) 6 '8 logical processors'
+    Eq ($S::CpuThreads(4)) 4 'at least 4'
+    Eq ($S::CpuThreads(32)) 8 'at most 8'
+    $script = 'C:/Games/LiveSubtitles/live-subtitles.lua'
+    Eq ($S::ScriptDevice((ObsCollection $script '{"mic": "Mic"}' '{}'))) 'gpu' 'script default'
+    Eq ($S::ScriptDevice((ObsCollection $script '{"device": "cpu"}' '{}'))) 'cpu' 'processor'
+    Eq ($S::ScriptDevice((ObsCollection $script '{"device": "keep"}' '{}'))) 'keep' 'keep'
+    Eq ($S::ScriptDevice((ObsCollection 'C:/x/no.lua' '{}' '{}'))) $null 'no script'
+    Eq ($S::ScriptDevice($null)) $null 'no collection'
+    Eq ($S::ScriptModelId((ObsCollection $script '{}' '{}'))) 'medium' 'script default'
+    Eq ($S::ScriptModelId((ObsCollection $script '{"model": "Whisper Small q5 (181Mb)"}' '{}'))) 'small' 'Small'
+    Eq ($S::ScriptModelId((ObsCollection $script '{"model": ""}' '{}'))) '' 'keep'
+    Eq ($S::ScriptModelId((ObsCollection 'C:/x/no.lua' '{}' '{}'))) $null 'no script'
+    Eq ($S::ScriptPreset((ObsCollection $script '{"style": "eve-local"}' '{}'))) 'eve' 'EVE Local'
+    Eq ($S::ScriptPreset((ObsCollection $script '{"style": "wow"}' '{}'))) 'wow' 'WoW'
+    Eq ($S::ScriptPreset((ObsCollection $script '{"style": "box"}' '{}'))) 'basic' 'other styles: basic'
+    Eq ($S::ScriptPreset((ObsCollection $script '{}' '{}'))) 'basic' 'script default'
+    Eq ($S::ScriptPreset((ObsCollection 'C:/x/no.lua' '{}' '{}'))) $null 'no script: no preset'
+    Eq ($S::ScriptSetting((ObsCollection $script '{"name": "Space Pilot"}' '{}'), 'name', '')) 'Space Pilot' 'name'
+    Eq ($S::ScriptSetting((ObsCollection $script '{}' '{}'), 'name', '')) '' 'no name'
   }
 
   Check 'PickLocalVocalAsset: official Windows installer by GPU flavor' {
@@ -271,6 +398,48 @@ try {
     $entry = (Get-Content -Raw -Encoding UTF8 $scenes | ConvertFrom-Json).modules.'scripts-tool'[0]
     Eq $entry.path ((Join-Path $dir 'live-subtitles.lua').Replace('\', '/')) 'script path in the chosen folder'
     Eq $entry.settings.style 'classic' 'basic style by default'
+  }
+
+  Check 'auto update: the added script and its LocalVocal filter move to the processor and Small, OBS needs only a start' {
+    if (Get-Process obs64 -ErrorAction SilentlyContinue) { return }
+    $fake = Join-Path $tmp 'upd'
+    $appdata = Join-Path $fake 'Roaming'; $temp = Join-Path $fake 'Temp'
+    foreach ($d in @((Join-Path $fake 'Local'), (Join-Path $fake 'ProgramData'), $temp)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+    $dir = Join-Path $fake 'Stream\LiveSubtitles'
+    Utf8File (Join-Path $dir 'live-subtitles.lua') '-- old version'
+    Utf8File (Join-Path $dir 'models\ggml-small-q5_1.bin') 'x'
+    $slash = $dir.Replace('\', '/')
+    $filter = '{"whisper_model_path": "!!!external!!!", "whisper_model_path_external": "' + $slash + '/models/ggml-medium-q5_0.bin", "partial_group": true, "backend_device": 0}'
+    $old = ObsCollection ($slash + '/live-subtitles.lua') '{"mic": "Mic", "style": "wow", "name": "Space Pilot"}' $filter
+    Utf8File (Join-Path $appdata 'obs-studio\user.ini') ('[Basic]' + "`r`n" + 'SceneCollectionFile=Test.json' + "`r`n")
+    $scenes = Join-Path $appdata 'obs-studio\basic\scenes\Test.json'
+    Utf8File $scenes $old
+    $psi = New-Object Diagnostics.ProcessStartInfo $Exe, '--auto --no-localvocal --no-model --model small --device cpu --preset eve'
+    $psi.UseShellExecute = $false
+    $psi.EnvironmentVariables['APPDATA'] = $appdata
+    $psi.EnvironmentVariables['LOCALAPPDATA'] = (Join-Path $fake 'Local')
+    $psi.EnvironmentVariables['PROGRAMDATA'] = (Join-Path $fake 'ProgramData')
+    $psi.EnvironmentVariables['TEMP'] = $temp
+    $psi.EnvironmentVariables['TMP'] = $temp
+    $p = [Diagnostics.Process]::Start($psi)
+    if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'installer did not finish' }
+    $log = Join-Path $temp 'LiveSubtitlesSetup.log'
+    $logText = if (Test-Path $log) { [IO.File]::ReadAllText($log) } else { '(no log)' }
+    Eq $p.ExitCode 0 ('exit code; log: ' + $logText)
+    if ([IO.File]::ReadAllText((Join-Path $dir 'live-subtitles.lua')) -eq '-- old version') { throw 'the module was not updated where OBS takes it' }
+    $c = Get-Content -Raw -Encoding UTF8 $scenes | ConvertFrom-Json
+    $entry = $c.modules.'scripts-tool'[1]
+    Eq $entry.settings.device 'cpu' 'script: processor'
+    Eq $entry.settings.model 'Whisper Small q5 (181Mb)' 'script: Small'
+    Eq $entry.settings.style 'wow' 'the style of an added script stays (presets are for new installs)'
+    Eq $entry.settings.name 'Space Pilot' 'name stays'
+    $f = $c.sources[1].filters[1].settings
+    Eq $f.backend_device -1 'filter: processor'
+    Eq $f.partial_group $false 'filter: one translation per phrase'
+    Eq $f.audio_ctx 576 'filter: audio window'
+    Eq $f.whisper_model_path_external ($slash + '/models/ggml-small-q5_1.bin') 'filter: Small from the module folder'
+    Eq ([IO.File]::ReadAllText($scenes + '.before-live-subtitles-' + $S::Version)) $old 'copy of the collection before the update'
+    if (Test-Path ($scenes + '.before-live-subtitles')) { throw 'the copy from the first install must stay as it was' }
   }
 } catch {
   [void]$failures.Add('setup: ' + $_.Exception.Message)

@@ -2,7 +2,7 @@
 <!-- asInvoker: no admin rights (everything goes to the user's folders; the LocalVocal installer asks for them itself).
      The manifest also turns off Windows "installer detection", which would otherwise elevate an exe named *Setup*. -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.2.0.0" name="LiveSubtitles.Setup"/>
+  <assemblyIdentity version="1.2.1.0" name="LiveSubtitles.Setup"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">

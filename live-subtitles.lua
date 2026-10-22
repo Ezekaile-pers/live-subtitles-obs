@@ -1,5 +1,5 @@
 --[[
-Live Subtitles for OBS 1.2.0 — английские субтитры вашей речи на стриме. MIT License, (c) 2026 Ezekaile.
+Live Subtitles for OBS 1.2.1 — английские субтитры вашей речи на стриме. MIT License, (c) 2026 Ezekaile.
 
 LocalVocal (Whisper) слушает микрофон, переводит речь на английский и пишет текст в скрытый текстовый источник.
 Этот скрипт раз в 100 мс читает текст и шлёт его событием «live-subtitles» (javascript_event) браузерным источникам
@@ -9,7 +9,7 @@ LocalVocal (Whisper) слушает микрофон, переводит реч�
 ]]
 obs = obslua
 
-local VERSION = '1.2.0'
+local VERSION = '1.2.1'
 local EVENT = 'live-subtitles'
 local LOCALVOCAL = 'transcription_filter_audio_filter'
 local FILTER_NAME = 'Live Subtitles (LocalVocal)'
